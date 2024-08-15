@@ -41,3 +41,6 @@ foldseek easy-search afdb_swissprot_raw_fcz.tar afdb_swissprot_raw_fcz.tar resul
   - Filter for UniRef50 clusters
     - containing only proteins entered in UniProt after 2024
     - With the UniParc ID larger to **UPI002B50703F** (First entry in 2024)
+
+## subsample dataset
+`head -n 1 result.tsv > result100.tsv & tail -n +2 result.tsv | shuf -n $(($(wc -l < result.tsv) / 100)) >> result100.tsv`

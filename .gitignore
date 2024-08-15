@@ -1,10 +1,13 @@
 # ignore for now
 /bin
 /data
+/config
 /doc
 /examples
 /into_the_unknown/backup
 /into_the_unknown/presentation
+/logs
+/notebooks
 /out
 /src
 /tests
