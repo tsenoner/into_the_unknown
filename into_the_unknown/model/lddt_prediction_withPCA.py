@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from scipy.stats import pearsonr, spearmanr
+from sklearn.decomposition import PCA
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
@@ -16,9 +17,10 @@ from tqdm import tqdm
 
 
 class ProteinEmbeddingDataset(Dataset):
-    def __init__(self, data, hdf_file):
+    def __init__(self, data, hdf_file, pca):
         self.data = data
         self.hdf_file = hdf_file
+        self.pca = pca
 
     def __len__(self):
         return len(self.data)
@@ -27,8 +29,10 @@ class ProteinEmbeddingDataset(Dataset):
         row = self.data.iloc[idx]
 
         with h5py.File(self.hdf_file, "r") as hdf:
-            query_emb = hdf[row["query"]][:].reshape(1, -1)
-            target_emb = hdf[row["target"]][:].reshape(1, -1)
+            query_emb = self.pca.transform(hdf[row["query"]][:].reshape(1, -1))
+            target_emb = self.pca.transform(
+                hdf[row["target"]][:].reshape(1, -1)
+            )
 
         query_emb = torch.tensor(query_emb.flatten(), dtype=torch.float32)
         target_emb = torch.tensor(target_emb.flatten(), dtype=torch.float32)
@@ -38,12 +42,32 @@ class ProteinEmbeddingDataset(Dataset):
 
 
 
-def create_data_loaders(csv_file, hdf_file, batch_size=32):
+def create_data_loaders(csv_file, hdf_file, batch_size=32, pca_components=128):
     data = pd.read_csv(csv_file)
 
     # Perform train, validation, test split (60%, 20%, 20%)
     train_data, temp_data = train_test_split(data, test_size=0.4, random_state=42)
     val_data, test_data = train_test_split(temp_data, test_size=0.5, random_state=42)
+
+    # Fit PCA on training data
+    print("Fitting PCA...")
+    with h5py.File(hdf_file, 'r') as hdf:
+        train_embeddings = []
+        for protein in tqdm(train_data['query'].unique()):
+            try:
+                embedding = hdf[protein][:].flatten()
+                train_embeddings.append(embedding)
+            except KeyError:
+                print(f"Warning: Protein {protein} not found in HDF file. Skipping.")
+
+        train_embeddings = np.array(train_embeddings)
+
+    if len(train_embeddings) == 0:
+        raise ValueError("No valid embeddings found in the HDF file for the training data.")
+
+    pca = PCA(n_components=pca_components)
+    pca.fit(train_embeddings)
+    print("PCA fitted.")
 
     # Filter out rows with missing proteins
     def filter_valid_proteins(df):
@@ -56,9 +80,9 @@ def create_data_loaders(csv_file, hdf_file, batch_size=32):
     test_data = filter_valid_proteins(test_data)
 
     # Create datasets
-    train_dataset = ProteinEmbeddingDataset(train_data, hdf_file)
-    val_dataset = ProteinEmbeddingDataset(val_data, hdf_file)
-    test_dataset = ProteinEmbeddingDataset(test_data, hdf_file)
+    train_dataset = ProteinEmbeddingDataset(train_data, hdf_file, pca)
+    val_dataset = ProteinEmbeddingDataset(val_data, hdf_file, pca)
+    test_dataset = ProteinEmbeddingDataset(test_data, hdf_file, pca)
 
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -205,7 +229,7 @@ def main(args):
 
     # Set up data
     train_loader, val_loader, test_loader = create_data_loaders(
-        args.csv_file, args.hdf_file, batch_size=32
+        args.csv_file, args.hdf_file, batch_size=32, pca_components=128
     )
 
     # Set up model
