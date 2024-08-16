@@ -204,16 +204,19 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Set up data
+    print("Set up data...")
     train_loader, val_loader, test_loader = create_data_loaders(
         args.csv_file, args.hdf_file, batch_size=32
     )
 
     # Set up model
+    print("Set up model...")
     model = LDDTPredictor(embedding_size=1024).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # Training loop
+    print("Start training...")
     num_epochs = 100
     train_losses = []
     val_losses = []
