@@ -69,7 +69,7 @@ def create_data_loaders(csv_file, hdf_file, batch_size=32):
 
 
 class LDDTPredictor(nn.Module):
-    def __init__(self, embedding_size=128, hidden_size=64):
+    def __init__(self, embedding_size=1024, hidden_size=64):
         super(LDDTPredictor, self).__init__()
         self.embedding_size = embedding_size
 
@@ -209,7 +209,7 @@ def main(args):
     )
 
     # Set up model
-    model = LDDTPredictor(embedding_size=128).to(device)
+    model = LDDTPredictor(embedding_size=1024).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
