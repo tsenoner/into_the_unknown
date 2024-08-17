@@ -20,22 +20,25 @@ from tensorboard.backend.event_processing.event_accumulator import (
 from torch.utils.data import DataLoader, Dataset
 
 class LoggingProgressBar(Callback):
-    def __init__(self, logging_interval=10):
+    def __init__(self, log_interval_pct=10):
         super().__init__()
-        self.logging_interval = logging_interval
-        self.train_batch_idx = 0
+        self.log_interval_pct = log_interval_pct
+        self.last_logged_pct = 0
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        self.train_batch_idx += 1
-        if self.train_batch_idx % self.logging_interval == 0:
+        total_batches = len(trainer.train_dataloader)
+        current_pct = 100.0 * (batch_idx + 1) / total_batches
+
+        if current_pct - self.last_logged_pct >= self.log_interval_pct or current_pct == 100:
             epoch = trainer.current_epoch
-            batches = self.train_batch_idx
-            total_batches = len(trainer.train_dataloader)
-            pct = 100.0 * batches / total_batches
-            print(
-                f"Epoch {epoch}: {pct:.1f}% | Batch {batches}/{total_batches}"
-            )
+            batches = batch_idx + 1
+            print(f"Epoch {epoch}: {current_pct:.1f}% | Batch {batches}/{total_batches}")
+            self.last_logged_pct = (current_pct // self.log_interval_pct) * self.log_interval_pct
+
+    @rank_zero_only
+    def on_train_epoch_start(self, trainer, pl_module):
+        self.last_logged_pct = 0
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -324,8 +327,8 @@ def main(args: argparse.Namespace) -> None:
         args.csv_file, args.hdf_file, batch_size=128
     )
 
-    # prepare training
-    progress_bar = LoggingProgressBar(logging_interval=10)
+    # --- prepare training ---
+    progress_bar = LoggingProgressBar(log_interval_pct=10)
 
     early_stop_callback = EarlyStopping(
         monitor="val_loss", patience=3, mode="min"
