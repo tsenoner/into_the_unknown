@@ -53,5 +53,5 @@ subset_csv() {
     echo "Subset created successfully: $sample_lines lines (${subset_size}%) written to $output_file"
 }
 
-# Example usage:
-# subset_csv input.csv output.csv 50
+# Call the function with the arguments passed to the script
+subset_csv "$@"
