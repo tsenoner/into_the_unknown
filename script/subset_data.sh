@@ -18,8 +18,8 @@ subset_csv() {
     fi
 
     # Validate subset size
-    if ! [[ "$subset_size" =~ ^[0-9]+$ ]] || ((subset_size < 1 || subset_size > 100)); then
-        echo "Error: Subset size must be an integer between 1 and 100."
+    if ! [[ "$subset_size" =~ ^[0-9]+([.][0-9]+)?$ ]] || (( $(echo "$subset_size < 0.01 || $subset_size > 100" | bc -l) )); then
+        echo "Error: Subset size must be a number between 0.01 and 100."
         return 1
     fi
 
@@ -40,7 +40,8 @@ subset_csv() {
     local total_lines
     total_lines=$(wc -l < "$input_file")
     local sample_lines
-    sample_lines=$(( (total_lines - 1) * subset_size / 100 ))
+    sample_lines=$(echo "($total_lines - 1) * $subset_size / 100" | bc -l)
+    sample_lines=$(printf "%.0f" "$sample_lines")  # Convert to integer
 
     # Ensure at least one line is sampled if the calculation rounds to 0
     if [[ $sample_lines -eq 0 ]]; then
