@@ -19,47 +19,49 @@ from tensorboard.backend.event_processing.event_accumulator import (
 from torch.utils.data import DataLoader, Dataset
 
 
-class ProteinEmbeddingDataset(Dataset):
-    def __init__(self, data: pd.DataFrame, hdf_file: str):
+class H5PyDataset(Dataset):
+    def __init__(self, data, file_path, pred_value):
         self.data = data
-        # self.hdf_file = hdf_file
-        self.hdf_file = h5py.File(hdf_file, "r")
+        self.pred_value = pred_value
+        self.file_path = file_path
+        self.file = None  # Will be initialized in worker processes
 
-    def __del__(self):
-        self.hdf_file.close()
-
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.data)
 
-    # def __getitem__(
-    #     self, idx: int
-    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    #     row = self.data.iloc[idx]
+    def __getitem__(self, idx):
+        if self.file is None:
+            self.file = h5py.File(self.file_path, "r", swmr=True)
 
-    #     with h5py.File(self.hdf_file, "r") as hdf:
-    #         query_emb = torch.tensor(
-    #             hdf[row["query"]][:].flatten(), dtype=torch.float32
-    #         )
-    #         target_emb = torch.tensor(
-    #             hdf[row["target"]][:].flatten(), dtype=torch.float32
-    #         )
-
-    #     lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
-
-    #     return query_emb, target_emb, lddt_score
-
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.data.iloc[idx]
         query_emb = torch.tensor(
-            self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32
+            self.file[row["query"]][:].flatten(), dtype=torch.float32
         )
         target_emb = torch.tensor(
-            self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32
+            self.file[row["target"]][:].flatten(), dtype=torch.float32
         )
-        lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+        lddt_score = torch.tensor(row[self.pred_value], dtype=torch.float32)
+
         return query_emb, target_emb, lddt_score
+
+    def close(self):
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+
+
+class H5PyDataLoader(DataLoader):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __del__(self):
+        self.dataset.close()
+
+
+def worker_init_fn(worker_id):
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+    dataset.file = h5py.File(dataset.file_path, "r", swmr=True)
 
 
 class LDDTPredictor(pl.LightningModule):
@@ -166,7 +168,7 @@ class LDDTPredictor(pl.LightningModule):
 
 
 def create_data_loaders(
-    csv_file: str, hdf_file: str, batch_size: int = 32
+    csv_file: str, hdf_file: str, pred_value: str, batch_size: int = 32
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     data = pd.read_csv(csv_file)
 
@@ -188,29 +190,32 @@ def create_data_loaders(
     val_data = filter_valid_proteins(val_data)
     test_data = filter_valid_proteins(test_data)
 
-    train_dataset = ProteinEmbeddingDataset(train_data, hdf_file)
-    val_dataset = ProteinEmbeddingDataset(val_data, hdf_file)
-    test_dataset = ProteinEmbeddingDataset(test_data, hdf_file)
+    train_dataset = H5PyDataset(train_data, hdf_file, pred_value)
+    val_dataset = H5PyDataset(val_data, hdf_file, pred_value)
+    test_dataset = H5PyDataset(test_data, hdf_file, pred_value)
 
-    train_loader = DataLoader(
+    train_loader = H5PyDataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
+        worker_init_fn=worker_init_fn,
         persistent_workers=True,
     )
-    val_loader = DataLoader(
+    val_loader = H5PyDataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
+        worker_init_fn=worker_init_fn,
         persistent_workers=True,
     )
-    test_loader = DataLoader(
+    test_loader = H5PyDataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
+        worker_init_fn=worker_init_fn,
         persistent_workers=True,
     )
 
@@ -297,7 +302,7 @@ def main(args: argparse.Namespace) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     train_loader, val_loader, test_loader = create_data_loaders(
-        args.csv_file, args.hdf_file, batch_size=128
+        args.csv_file, args.hdf_file, args.pred_parm, batch_size=128
     )
 
     # --- prepare training ---
@@ -323,6 +328,8 @@ def main(args: argparse.Namespace) -> None:
 
     model = LDDTPredictor(embedding_size=1024, learning_rate=0.001)
     trainer.fit(model, train_loader, val_loader)
+    del train_loader
+    del val_loader
 
     plot_training_curve(trainer, args.output_dir)
 
@@ -354,6 +361,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-H", "--hdf_file", type=str, required=True, help="Path to the HDF file"
+    )
+    parser.add_argument(
+        "-p",
+        "--pred_parm",
+        type=str,
+        required=True,
+        help="Name of the parameter column to predict in the CSV file",
     )
     parser.add_argument(
         "-o",
