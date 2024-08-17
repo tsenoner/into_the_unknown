@@ -10,10 +10,17 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
+from tensorboard.backend.event_processing.event_accumulator import (
+    EventAccumulator,
+)
 from torch.utils.data import DataLoader, Dataset
+
+share_strategy = torch.multiprocessing.get_sharing_strategy()
+torch.multiprocessing.set_sharing_strategy(share_strategy)  # "file_descriptor")
 
 
 class ProteinEmbeddingDataset(Dataset):
@@ -43,7 +50,12 @@ class ProteinEmbeddingDataset(Dataset):
 
 
 class LDDTPredictor(pl.LightningModule):
-    def __init__(self, embedding_size: int = 1024, hidden_size: int = 64, learning_rate: float = 0.001):
+    def __init__(
+        self,
+        embedding_size: int = 1024,
+        hidden_size: int = 64,
+        learning_rate: float = 0.001,
+    ):
         super().__init__()
         self.save_hyperparameters()
 
@@ -65,6 +77,8 @@ class LDDTPredictor(pl.LightningModule):
         self.criterion = nn.MSELoss()
         self.val_predictions = []
         self.val_targets = []
+        self.test_predictions = []
+        self.test_targets = []
 
     def forward(self, emb1: torch.Tensor, emb2: torch.Tensor) -> torch.Tensor:
         proc1 = self.individual_layers(emb1)
@@ -78,15 +92,29 @@ class LDDTPredictor(pl.LightningModule):
 
     def training_step(self, batch: tuple, batch_idx: int) -> dict:
         loss, preds, targets = self._common_step(batch, batch_idx)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return {"loss": loss, "preds": preds, "targets": targets}
 
     def validation_step(self, batch: tuple, batch_idx: int) -> dict:
         loss, preds, targets = self._common_step(batch, batch_idx)
-        self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.val_predictions.append(preds)
         self.val_targets.append(targets)
         return {"val_loss": loss, "preds": preds, "targets": targets}
+
+    def test_step(self, batch: tuple, batch_idx: int) -> dict:
+        loss, preds, targets = self._common_step(batch, batch_idx)
+        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.test_predictions.append(preds)
+        self.test_targets.append(targets)
+        return {"test_loss": loss, "preds": preds, "targets": targets}
+
+    def predict_step(
+        self, batch: tuple, batch_idx: int, dataloader_idx: int = 0
+    ) -> torch.Tensor:
+        query_emb, target_emb, _ = batch
+        predictions = self(query_emb, target_emb)
+        return predictions
 
     def _common_step(self, batch: tuple, batch_idx: int) -> tuple:
         query_emb, target_emb, lddt_scores = batch
@@ -94,26 +122,34 @@ class LDDTPredictor(pl.LightningModule):
         loss = self.criterion(predictions, lddt_scores)
         return loss, predictions, lddt_scores
 
-    def on_train_epoch_end(self) -> None:
-        # Log the epoch-level training loss
-        self.log('train_loss_epoch', self.trainer.callback_metrics['train_loss_epoch'], on_epoch=True, prog_bar=True)
-
     def on_validation_epoch_end(self) -> None:
-        all_preds = torch.cat(self.val_predictions).cpu().numpy()
-        all_targets = torch.cat(self.val_targets).cpu().numpy()
+        self._log_epoch_metrics(self.val_predictions, self.val_targets, "val")
+        self.val_predictions.clear()
+        self.val_targets.clear()
+
+    def on_test_epoch_end(self) -> None:
+        self._log_epoch_metrics(
+            self.test_predictions, self.test_targets, "test"
+        )
+        self.test_predictions.clear()
+        self.test_targets.clear()
+
+    def _log_epoch_metrics(self, predictions, targets, prefix):
+        all_preds = torch.cat(predictions).cpu().numpy()
+        all_targets = torch.cat(targets).cpu().numpy()
 
         r2 = r2_score(all_targets, all_preds)
         pearson_corr, _ = pearsonr(all_preds, all_targets)
 
-        self.log('val_r2', r2, on_epoch=True, prog_bar=True)
-        self.log('val_pearson', pearson_corr, on_epoch=True, prog_bar=True)
-
-        # Clear the predictions and targets for the next epoch
-        self.val_predictions.clear()
-        self.val_targets.clear()
+        self.log(f"{prefix}_r2", r2, on_epoch=True, prog_bar=True)
+        self.log(
+            f"{prefix}_pearson", pearson_corr, on_epoch=True, prog_bar=True
+        )
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        return torch.optim.Adam(
+            self.parameters(), lr=self.hparams.learning_rate
+        )
 
 
 def create_data_loaders(
@@ -144,13 +180,25 @@ def create_data_loaders(
     test_dataset = ProteinEmbeddingDataset(test_data, hdf_file)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        persistent_workers=True,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        persistent_workers=True,
     )
     test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        persistent_workers=True,
     )
 
     return train_loader, val_loader, test_loader
@@ -158,12 +206,13 @@ def create_data_loaders(
 
 def plot_training_curve(trainer: pl.Trainer, output_dir: str) -> None:
     # Get the logged metrics history
-    history = trainer.fit_loop.epoch_loop._results
-    print(history)
-
-    train_losses = history["train_loss_epoch"].values
-    val_losses = history["val_loss_epoch"].values
-    val_r2s = history["val_r2"].values if "val_r2" in history else None
+    event_acc = EventAccumulator(trainer.logger.log_dir)
+    event_acc.Reload()
+    scalars = event_acc.Scalars
+    train_losses = [scalar.value for scalar in scalars("train_loss_epoch")]
+    val_losses = [scalar.value for scalar in scalars("val_loss_epoch")]
+    val_r2s = [scalar.value for scalar in scalars("val_r2")]
+    val_pearsons = [scalar.value for scalar in scalars("val_pearson")]
 
     epochs = range(1, len(train_losses) + 1)
 
@@ -174,13 +223,20 @@ def plot_training_curve(trainer: pl.Trainer, output_dir: str) -> None:
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
     ax1.set_title("Training and Validation Metrics")
-    ax1.legend(loc='upper left')
+    ax1.legend(loc="upper left")
 
-    if val_r2s is not None:
-        ax2 = ax1.twinx()
-        ax2.plot(epochs, val_r2s, label="Validation R²", color='r')
-        ax2.set_ylabel("R²")
-        ax2.legend(loc='upper right')
+    # add correlation results
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, val_r2s, label="Validation R²", color="#5fd35b", ls="--")
+    ax2.plot(
+        epochs,
+        val_pearsons,
+        label="Validation pearson",
+        color="#357533",
+        ls="--",
+    )
+    ax2.set_ylabel("Correlation metric")
+    ax2.legend(loc="upper right")
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "training_curve.png"))
@@ -189,18 +245,7 @@ def plot_training_curve(trainer: pl.Trainer, output_dir: str) -> None:
     # Print final metrics
     print(f"Final Training Loss: {train_losses[-1]:.4f}")
     print(f"Final Validation Loss: {val_losses[-1]:.4f}")
-    if val_r2s is not None:
-        print(f"Final Validation R²: {val_r2s[-1]:.4f}")
-
-    # Save metrics to a CSV file
-    metrics_df = pd.DataFrame({
-        'epoch': epochs,
-        'train_loss': train_losses,
-        'val_loss': val_losses,
-    })
-    if val_r2s is not None:
-        metrics_df['val_r2'] = val_r2s
-    metrics_df.to_csv(os.path.join(output_dir, "training_metrics.csv"), index=False)
+    print(f"Final Validation R²: {val_r2s[-1]:.4f}")
 
 
 def plot_scatter(
@@ -241,36 +286,38 @@ def main(args: argparse.Namespace) -> None:
     model = LDDTPredictor(embedding_size=1024, learning_rate=0.001)
 
     early_stop_callback = EarlyStopping(
-        monitor="val_loss", patience=5, mode="min"
+        monitor="val_loss", patience=3, mode="min"
     )
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.output_dir,
-        filename="best_model",
-        save_top_k=100,
+        save_top_k=1,
         verbose=True,
         monitor="val_loss",
         mode="min",
     )
 
     trainer = pl.Trainer(
-        max_epochs=1,
+        max_epochs=100,
         callbacks=[early_stop_callback, checkpoint_callback],
         accelerator="auto",
         devices="auto",  # This will use all available GPUs or CPU
         enable_progress_bar=True,
-        default_root_dir=args.output_dir
+        default_root_dir=args.output_dir,
     )
 
     trainer.fit(model, train_loader, val_loader)
 
     plot_training_curve(trainer, args.output_dir)
 
-    best_model = LDDTPredictor.load_from_checkpoint(
-        checkpoint_callback.best_model_path
-    )
-    test_results = trainer.test(best_model, test_dataloaders=test_loader)
+    # evaluate performance
+    # best_model = LDDTPredictor.load_from_checkpoint(
+    #     checkpoint_callback.best_model_path
+    # )
+    test_results = trainer.test(dataloaders=test_loader, ckpt_path="best")
 
-    test_predictions = trainer.predict(best_model, dataloaders=test_loader)
+    test_predictions = trainer.predict(
+        dataloaders=test_loader, ckpt_path="best"
+    )
     test_predictions = torch.cat(test_predictions).cpu().numpy()
     test_targets = torch.cat([batch[2] for batch in test_loader]).cpu().numpy()
 
@@ -282,7 +329,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     print("Final Evaluation on Test Set:")
-    print(f"Test Loss (MSE): {test_results[0]['test_loss']:.4f}")
+    print(f"Test Loss (MSE): {test_results[0]['test_loss_epoch']:.4f}")
     print(f"Test R²: {test_r2:.4f}")
     print(f"Test Pearson Correlation: {test_pearson:.4f}")
 
