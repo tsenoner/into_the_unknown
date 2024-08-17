@@ -7,7 +7,8 @@ import torch
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from utils import (
+
+from .utils import (
     Predictor,
     create_data_loaders,
     plot_scatter,
