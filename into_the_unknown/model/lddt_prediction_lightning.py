@@ -9,7 +9,8 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import ProgressBar
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
@@ -19,7 +20,8 @@ from tensorboard.backend.event_processing.event_accumulator import (
 )
 from torch.utils.data import DataLoader, Dataset
 
-class LoggingProgressBar(Callback):
+
+class CustomProgressBar(ProgressBar):
     def __init__(self, log_interval_pct=10):
         super().__init__()
         self.log_interval_pct = log_interval_pct
@@ -27,23 +29,35 @@ class LoggingProgressBar(Callback):
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        total_batches = len(trainer.train_dataloader)
+        super().on_train_batch_end(
+            trainer, pl_module, outputs, batch, batch_idx
+        )
+        total_batches = self.total_train_batches
         current_pct = 100.0 * (batch_idx + 1) / total_batches
 
-        if current_pct - self.last_logged_pct >= self.log_interval_pct or current_pct == 100:
-            epoch = trainer.current_epoch
-            batches = batch_idx + 1
-            print(f"Epoch {epoch}: {current_pct:.1f}% | Batch {batches}/{total_batches}")
-            self.last_logged_pct = (current_pct // self.log_interval_pct) * self.log_interval_pct
+        if (
+            current_pct - self.last_logged_pct >= self.log_interval_pct
+            or current_pct == 100
+        ):
+            self.last_logged_pct = (
+                current_pct // self.log_interval_pct
+            ) * self.log_interval_pct
+            progress_dict = self.get_progress_bar_dict(trainer)
+            progress_str = self.dict_to_string(progress_dict)
+            print(
+                f"Epoch {trainer.current_epoch}: {current_pct:.1f}%|{'█' * int(current_pct // 5):<20}| {progress_str}"
+            )
 
     @rank_zero_only
     def on_train_epoch_start(self, trainer, pl_module):
+        super().on_train_epoch_start(trainer, pl_module)
         self.last_logged_pct = 0
 
-    @rank_zero_only
-    def on_validation_epoch_end(self, trainer, pl_module):
-        metrics = trainer.callback_metrics
-        print(f"Validation metrics: {metrics}")
+    def dict_to_string(self, d):
+        return ", ".join(
+            f"{k}={v:.6f}" if isinstance(v, float) else f"{k}={v}"
+            for k, v in d.items()
+        )
 
 
 class ProteinEmbeddingDataset(Dataset):
@@ -328,7 +342,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # --- prepare training ---
-    progress_bar = LoggingProgressBar(log_interval_pct=10)
+    progress_bar = CustomProgressBar(log_interval_pct=10)
 
     early_stop_callback = EarlyStopping(
         monitor="val_loss", patience=3, mode="min"
