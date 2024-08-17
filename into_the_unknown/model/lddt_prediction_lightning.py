@@ -35,21 +35,28 @@ class ProteinEmbeddingDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # def __getitem__(
+    #     self, idx: int
+    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     row = self.data.iloc[idx]
+
+    #     with h5py.File(self.hdf_file, "r") as hdf:
+    #         query_emb = torch.tensor(
+    #             hdf[row["query"]][:].flatten(), dtype=torch.float32
+    #         )
+    #         target_emb = torch.tensor(
+    #             hdf[row["target"]][:].flatten(), dtype=torch.float32
+    #         )
+
+    #     lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+
+    #     return query_emb, target_emb, lddt_score
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.data.iloc[idx]
-
-        with h5py.File(self.hdf_file, "r") as hdf:
-            query_emb = torch.tensor(
-                hdf[row["query"]][:].flatten(), dtype=torch.float32
-            )
-            target_emb = torch.tensor(
-                hdf[row["target"]][:].flatten(), dtype=torch.float32
-            )
-
+        query_emb = torch.tensor(self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32)
+        target_emb = torch.tensor(self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32)
         lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
-
         return query_emb, target_emb, lddt_score
 
 
