@@ -20,13 +20,17 @@ from tensorboard.backend.event_processing.event_accumulator import (
 from torch.utils.data import DataLoader, Dataset
 
 share_strategy = torch.multiprocessing.get_sharing_strategy()
-torch.multiprocessing.set_sharing_strategy(share_strategy)  # "file_descriptor")
+torch.multiprocessing.set_sharing_strategy(share_strategy)
 
 
 class ProteinEmbeddingDataset(Dataset):
     def __init__(self, data: pd.DataFrame, hdf_file: str):
         self.data = data
-        self.hdf_file = hdf_file
+        # self.hdf_file = hdf_file
+        self.hdf_file = h5py.File(hdf_file, "r")
+
+    def __del__(self):
+        self.hdf_file.close()
 
     def __len__(self) -> int:
         return len(self.data)
