@@ -26,38 +26,38 @@ torch.multiprocessing.set_sharing_strategy(share_strategy)
 class ProteinEmbeddingDataset(Dataset):
     def __init__(self, data: pd.DataFrame, hdf_file: str):
         self.data = data
-        self.hdf_file = hdf_file
-        # self.hdf_file = h5py.File(hdf_file, "r")
+        # self.hdf_file = hdf_file
+        self.hdf_file = h5py.File(hdf_file, "r")
 
-    # def __del__(self):
-    #     self.hdf_file.close()
+    def __del__(self):
+        self.hdf_file.close()
 
     def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        row = self.data.iloc[idx]
-
-        with h5py.File(self.hdf_file, "r") as hdf:
-            query_emb = torch.tensor(
-                hdf[row["query"]][:].flatten(), dtype=torch.float32
-            )
-            target_emb = torch.tensor(
-                hdf[row["target"]][:].flatten(), dtype=torch.float32
-            )
-
-        lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
-
-        return query_emb, target_emb, lddt_score
-
-    # def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # def __getitem__(
+    #     self, idx: int
+    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     #     row = self.data.iloc[idx]
-    #     query_emb = torch.tensor(self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32)
-    #     target_emb = torch.tensor(self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32)
+
+    #     with h5py.File(self.hdf_file, "r") as hdf:
+    #         query_emb = torch.tensor(
+    #             hdf[row["query"]][:].flatten(), dtype=torch.float32
+    #         )
+    #         target_emb = torch.tensor(
+    #             hdf[row["target"]][:].flatten(), dtype=torch.float32
+    #         )
+
     #     lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+
     #     return query_emb, target_emb, lddt_score
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        row = self.data.iloc[idx]
+        query_emb = torch.tensor(self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32)
+        target_emb = torch.tensor(self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32)
+        lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+        return query_emb, target_emb, lddt_score
 
 
 class LDDTPredictor(pl.LightningModule):
