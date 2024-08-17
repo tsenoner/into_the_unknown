@@ -9,11 +9,7 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import (
-    EarlyStopping,
-    ModelCheckpoint,
-    TQDMProgressBar,
-)
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
@@ -26,44 +22,44 @@ from torch.utils.data import DataLoader, Dataset
 class ProteinEmbeddingDataset(Dataset):
     def __init__(self, data: pd.DataFrame, hdf_file: str):
         self.data = data
-        self.hdf_file = hdf_file
-        # self.hdf_file = h5py.File(hdf_file, "r")
+        # self.hdf_file = hdf_file
+        self.hdf_file = h5py.File(hdf_file, "r")
 
-    # def __del__(self):
-    #     self.hdf_file.close()
+    def __del__(self):
+        self.hdf_file.close()
 
     def __len__(self) -> int:
         return len(self.data)
-
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        row = self.data.iloc[idx]
-
-        with h5py.File(self.hdf_file, "r") as hdf:
-            query_emb = torch.tensor(
-                hdf[row["query"]][:].flatten(), dtype=torch.float32
-            )
-            target_emb = torch.tensor(
-                hdf[row["target"]][:].flatten(), dtype=torch.float32
-            )
-
-        lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
-
-        return query_emb, target_emb, lddt_score
 
     # def __getitem__(
     #     self, idx: int
     # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     #     row = self.data.iloc[idx]
-    #     query_emb = torch.tensor(
-    #         self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32
-    #     )
-    #     target_emb = torch.tensor(
-    #         self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32
-    #     )
+
+    #     with h5py.File(self.hdf_file, "r") as hdf:
+    #         query_emb = torch.tensor(
+    #             hdf[row["query"]][:].flatten(), dtype=torch.float32
+    #         )
+    #         target_emb = torch.tensor(
+    #             hdf[row["target"]][:].flatten(), dtype=torch.float32
+    #         )
+
     #     lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+
     #     return query_emb, target_emb, lddt_score
+
+    def __getitem__(
+        self, idx: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        row = self.data.iloc[idx]
+        query_emb = torch.tensor(
+            self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32
+        )
+        target_emb = torch.tensor(
+            self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32
+        )
+        lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+        return query_emb, target_emb, lddt_score
 
 
 class LDDTPredictor(pl.LightningModule):
@@ -305,9 +301,6 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # --- prepare training ---
-    refresh_rate = len(train_loader) % 10
-    progress_bar = TQDMProgressBar(refresh_rate=refresh_rate, leave=True)
-
     early_stop_callback = EarlyStopping(
         monitor="val_loss", patience=3, mode="min"
     )
@@ -320,11 +313,11 @@ def main(args: argparse.Namespace) -> None:
     )
 
     trainer = pl.Trainer(
-        max_epochs=100,
-        callbacks=[early_stop_callback, checkpoint_callback, progress_bar],
+        max_epochs=2,
+        callbacks=[early_stop_callback, checkpoint_callback],
         accelerator="auto",
         devices="auto",
-        # enable_progress_bar=False,
+        enable_progress_bar=True,
         default_root_dir=args.output_dir,
     )
 
