@@ -313,7 +313,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     trainer = pl.Trainer(
-        max_epochs=2,
+        max_epochs=100,
         callbacks=[early_stop_callback, checkpoint_callback],
         accelerator="auto",
         devices="auto",
