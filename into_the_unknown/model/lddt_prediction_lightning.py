@@ -1,357 +1,159 @@
 import argparse
 import os
-from typing import Tuple
 
-import h5py
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import pytorch_lightning as pl
 import torch
-import torch.nn as nn
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from scipy.stats import pearsonr
-from sklearn.metrics import r2_score
-from sklearn.model_selection import train_test_split
-from tensorboard.backend.event_processing.event_accumulator import (
-    EventAccumulator,
+from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from utils import (
+    Predictor,
+    create_data_loaders,
+    plot_scatter,
+    plot_training_curve,
 )
-from torch.utils.data import DataLoader, Dataset
 
 
-class H5PyDataset(Dataset):
-    def __init__(self, data, file_path, pred_value):
-        self.data = data
-        self.pred_value = pred_value
-        self.file_path = file_path
-        self.file = None  # Will be initialized in worker processes
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        if self.file is None:
-            self.file = h5py.File(self.file_path, "r", swmr=True)
-
-        row = self.data.iloc[idx]
-        query_emb = torch.tensor(
-            self.file[row["query"]][:].flatten(), dtype=torch.float32
+class PredictorPipeline:
+    def __init__(self, args, hparams):
+        self.args = args
+        self.hparams = hparams
+        self.setup_gpu()
+        pl.seed_everything(self.hparams["seed"])
+        self.setup_output_directory()
+        self.train_loader, self.val_loader, self.test_loader = (
+            self.setup_data_loaders()
         )
-        target_emb = torch.tensor(
-            self.file[row["target"]][:].flatten(), dtype=torch.float32
-        )
-        lddt_score = torch.tensor(row[self.pred_value], dtype=torch.float32)
-
-        return query_emb, target_emb, lddt_score
-
-    def close(self):
-        if self.file is not None:
-            self.file.close()
-            self.file = None
-
-
-class H5PyDataLoader(DataLoader):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def __del__(self):
-        self.dataset.close()
-
-
-def worker_init_fn(worker_id):
-    worker_info = torch.utils.data.get_worker_info()
-    dataset = worker_info.dataset
-    dataset.file = h5py.File(dataset.file_path, "r", swmr=True)
-
-
-class LDDTPredictor(pl.LightningModule):
-    def __init__(
-        self,
-        embedding_size: int = 1024,
-        hidden_size: int = 64,
-        learning_rate: float = 0.001,
-    ):
-        super().__init__()
-        self.save_hyperparameters()
-
-        self.individual_layers = nn.Sequential(
-            nn.Linear(embedding_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+        self.callbacks = self.setup_callbacks()
+        self.trainer = self.setup_trainer()
+        self.model = Predictor(
+            embedding_size=self.args.embedding_size,
+            hidden_size=self.hparams["hidden_size"],
+            learning_rate=self.hparams["learning_rate"],
         )
 
-        self.combined_layers = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1),
+    def setup_gpu(self):
+        if torch.cuda.is_available():
+            print("GPU available. Applying Tensor Core utilization.")
+            torch.set_float32_matmul_precision("medium")
+
+    def setup_output_directory(self):
+        os.makedirs(self.args.output_dir, exist_ok=True)
+
+    def setup_data_loaders(self):
+        return create_data_loaders(
+            self.args.csv_file,
+            self.args.hdf_file,
+            self.args.param_name,
+            batch_size=self.hparams["batch_size"],
         )
 
-        self.criterion = nn.MSELoss()
-        self.val_predictions = []
-        self.val_targets = []
-        self.test_predictions = []
-        self.test_targets = []
-
-    def forward(self, emb1: torch.Tensor, emb2: torch.Tensor) -> torch.Tensor:
-        proc1 = self.individual_layers(emb1)
-        proc2 = self.individual_layers(emb2)
-
-        combined = torch.cat([proc1 + proc2, torch.abs(proc1 - proc2)], dim=1)
-
-        lddt_score = self.combined_layers(combined)
-
-        return lddt_score.squeeze()
-
-    def training_step(self, batch: tuple, batch_idx: int) -> dict:
-        loss, preds, targets = self._common_step(batch, batch_idx)
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        return {"loss": loss, "preds": preds, "targets": targets}
-
-    def validation_step(self, batch: tuple, batch_idx: int) -> dict:
-        loss, preds, targets = self._common_step(batch, batch_idx)
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.val_predictions.append(preds)
-        self.val_targets.append(targets)
-        return {"val_loss": loss, "preds": preds, "targets": targets}
-
-    def test_step(self, batch: tuple, batch_idx: int) -> dict:
-        loss, preds, targets = self._common_step(batch, batch_idx)
-        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.test_predictions.append(preds)
-        self.test_targets.append(targets)
-        return {"test_loss": loss, "preds": preds, "targets": targets}
-
-    def predict_step(
-        self, batch: tuple, batch_idx: int, dataloader_idx: int = 0
-    ) -> torch.Tensor:
-        query_emb, target_emb, _ = batch
-        predictions = self(query_emb, target_emb)
-        return predictions
-
-    def _common_step(self, batch: tuple, batch_idx: int) -> tuple:
-        query_emb, target_emb, lddt_scores = batch
-        predictions = self(query_emb, target_emb)
-        loss = self.criterion(predictions, lddt_scores)
-        return loss, predictions, lddt_scores
-
-    def on_validation_epoch_end(self) -> None:
-        self._log_epoch_metrics(self.val_predictions, self.val_targets, "val")
-        self.val_predictions.clear()
-        self.val_targets.clear()
-
-    def on_test_epoch_end(self) -> None:
-        self._log_epoch_metrics(
-            self.test_predictions, self.test_targets, "test"
+    def setup_callbacks(self):
+        early_stop_callback = EarlyStopping(
+            monitor="val_loss",
+            patience=self.hparams["early_stopping_patience"],
+            mode="min",
         )
-        self.test_predictions.clear()
-        self.test_targets.clear()
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=self.args.output_dir,
+            save_top_k=1,
+            verbose=True,
+            monitor="val_loss",
+            mode="min",
+        )
+        return [early_stop_callback, checkpoint_callback]
 
-    def _log_epoch_metrics(self, predictions, targets, prefix):
-        all_preds = torch.cat(predictions).cpu().numpy()
-        all_targets = torch.cat(targets).cpu().numpy()
-
-        r2 = r2_score(all_targets, all_preds)
-        pearson_corr, _ = pearsonr(all_preds, all_targets)
-
-        self.log(f"{prefix}_r2", r2, on_epoch=True, prog_bar=True)
-        self.log(
-            f"{prefix}_pearson", pearson_corr, on_epoch=True, prog_bar=True
+    def setup_trainer(self):
+        return pl.Trainer(
+            max_epochs=self.hparams["max_epochs"],
+            callbacks=self.callbacks,
+            accelerator="auto",
+            devices="auto",
+            enable_progress_bar=True,
+            default_root_dir=self.args.output_dir,
         )
 
-    def configure_optimizers(self):
-        return torch.optim.Adam(
-            self.parameters(), lr=self.hparams.learning_rate
+    def train(self):
+        self.trainer.fit(self.model, self.train_loader, self.val_loader)
+        plot_training_curve(self.trainer, self.args.output_dir)
+
+    def predict(self, data_loader):
+        predictions = self.trainer.predict(
+            dataloaders=data_loader, ckpt_path="best"
         )
+        predictions = torch.cat(predictions).cpu().numpy()
+        targets = torch.cat([batch[2] for batch in data_loader]).cpu().numpy()
+        return predictions, targets
 
+    @staticmethod
+    def calculate_metrics(predictions, targets):
+        mse = mean_squared_error(targets, predictions)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(targets, predictions)
+        r2 = r2_score(targets, predictions)
+        pearson_corr, _ = pearsonr(predictions, targets)
+        spearman_corr, _ = spearmanr(predictions, targets)
 
-def create_data_loaders(
-    csv_file: str, hdf_file: str, pred_value: str, batch_size: int = 32
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    data = pd.read_csv(csv_file)
+        return {
+            "MSE": mse,
+            "RMSE": rmse,
+            "MAE": mae,
+            "R2": r2,
+            "Pearson Correlation": pearson_corr,
+            "Spearman Correlation": spearman_corr,
+        }
 
-    train_data, temp_data = train_test_split(
-        data, test_size=0.4, random_state=42
-    )
-    val_data, test_data = train_test_split(
-        temp_data, test_size=0.5, random_state=42
-    )
+    @staticmethod
+    def print_metrics(metrics, dataset_name="Test"):
+        print(f"\nFinal Evaluation on {dataset_name} Set:")
+        for metric, value in metrics.items():
+            print(f"{metric}: {value:.4f}")
 
-    def filter_valid_proteins(df: pd.DataFrame) -> pd.DataFrame:
-        with h5py.File(hdf_file, "r") as hdf:
-            valid_proteins = df[
-                df["query"].isin(hdf.keys()) & df["target"].isin(hdf.keys())
-            ]
-        return valid_proteins
+    def save_metrics(self, metrics, dataset_name="test"):
+        metrics_file = os.path.join(
+            self.args.output_dir, f"{dataset_name}_metrics.txt"
+        )
+        with open(metrics_file, "w") as f:
+            for metric, value in metrics.items():
+                f.write(f"{metric}: {value:.4f}\n")
+        print(f"Metrics saved to {metrics_file}")
 
-    train_data = filter_valid_proteins(train_data)
-    val_data = filter_valid_proteins(val_data)
-    test_data = filter_valid_proteins(test_data)
+    def evaluate(self, data_loader, dataset_name="Test"):
+        predictions, targets = self.predict(data_loader)
+        metrics = self.calculate_metrics(predictions, targets)
+        self.print_metrics(metrics, dataset_name)
+        self.save_metrics(metrics, dataset_name.lower())
 
-    train_dataset = H5PyDataset(train_data, hdf_file, pred_value)
-    val_dataset = H5PyDataset(val_data, hdf_file, pred_value)
-    test_dataset = H5PyDataset(test_data, hdf_file, pred_value)
+        if dataset_name.lower() == "test":
+            plot_scatter(
+                predictions,
+                targets,
+                metrics["Pearson Correlation"],
+                metrics["R2"],
+                self.args.output_dir,
+            )
 
-    train_loader = H5PyDataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        worker_init_fn=worker_init_fn,
-        persistent_workers=True,
-    )
-    val_loader = H5PyDataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        worker_init_fn=worker_init_fn,
-        persistent_workers=True,
-    )
-    test_loader = H5PyDataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        worker_init_fn=worker_init_fn,
-        persistent_workers=True,
-    )
+        return metrics
 
-    return train_loader, val_loader, test_loader
-
-
-def plot_training_curve(trainer: pl.Trainer, output_dir: str) -> None:
-    # Get the logged metrics history
-    event_acc = EventAccumulator(trainer.logger.log_dir)
-    event_acc.Reload()
-    scalars = event_acc.Scalars
-    train_losses = [scalar.value for scalar in scalars("train_loss_epoch")]
-    val_losses = [scalar.value for scalar in scalars("val_loss_epoch")]
-    val_r2s = [scalar.value for scalar in scalars("val_r2")]
-    val_pearsons = [scalar.value for scalar in scalars("val_pearson")]
-
-    epochs = range(1, len(train_losses) + 1)
-
-    fig, ax1 = plt.subplots(figsize=(10, 5))
-
-    ax1.plot(epochs, train_losses, label="Training Loss")
-    ax1.plot(epochs, val_losses, label="Validation Loss")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.set_title("Training and Validation Metrics")
-    ax1.legend(loc="upper left")
-
-    # add correlation results
-    ax2 = ax1.twinx()
-    ax2.plot(epochs, val_r2s, label="Validation R²", color="#5fd35b", ls="--")
-    ax2.plot(
-        epochs,
-        val_pearsons,
-        label="Validation pearson",
-        color="#357533",
-        ls="--",
-    )
-    ax2.set_ylabel("Correlation metric")
-    ax2.legend(loc="upper right")
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "training_curve.png"))
-    plt.close()
-
-    # Print final metrics
-    print(f"Final Training Loss: {train_losses[-1]:.4f}")
-    print(f"Final Validation Loss: {val_losses[-1]:.4f}")
-    print(f"Final Validation R²: {val_r2s[-1]:.4f}")
-
-
-def plot_scatter(
-    predictions: np.ndarray,
-    targets: np.ndarray,
-    pearson_corr: float,
-    r2: float,
-    output_dir: str,
-) -> None:
-    plt.figure(figsize=(10, 10))
-    plt.scatter(targets, predictions, alpha=0.5)
-    plt.plot([0, 1], [0, 1], "r--")  # Diagonal line
-    plt.xlabel("True lDDT")
-    plt.ylabel("Predicted lDDT")
-    plt.title(
-        f"True vs Predicted lDDT\nPearson Correlation: {pearson_corr:.4f}, R²: {r2:.4f}"
-    )
-    plt.text(
-        0.05,
-        0.95,
-        f"Pearson Correlation: {pearson_corr:.4f}\nR²: {r2:.4f}",
-        transform=plt.gca().transAxes,
-        verticalalignment="top",
-    )
-    plt.savefig(os.path.join(output_dir, "lddt_scatter_plot.png"))
-    plt.close()
+    def run(self):
+        self.train()
+        # self.evaluate(self.val_loader, "Validation")
+        self.evaluate(self.test_loader, "Test")
 
 
 def main(args: argparse.Namespace) -> None:
-    if torch.cuda.is_available():
-        print("GPU available. Applying Tensor Core utilization recommendation.")
-        torch.set_float32_matmul_precision("medium")
+    hparams = {
+        "seed": args.seed,
+        "hidden_size": args.hidden_size,
+        "learning_rate": args.learning_rate,
+        "batch_size": args.batch_size,
+        "max_epochs": args.max_epochs,
+        "early_stopping_patience": args.early_stopping_patience,
+    }
 
-    pl.seed_everything(42)
-
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    train_loader, val_loader, test_loader = create_data_loaders(
-        args.csv_file, args.hdf_file, args.pred_parm, batch_size=128
-    )
-
-    # --- prepare training ---
-    early_stop_callback = EarlyStopping(
-        monitor="val_loss", patience=3, mode="min"
-    )
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=args.output_dir,
-        save_top_k=1,
-        verbose=True,
-        monitor="val_loss",
-        mode="min",
-    )
-
-    trainer = pl.Trainer(
-        max_epochs=100,
-        callbacks=[early_stop_callback, checkpoint_callback],
-        accelerator="auto",
-        devices="auto",
-        enable_progress_bar=True,
-        default_root_dir=args.output_dir,
-    )
-
-    model = LDDTPredictor(embedding_size=1024, learning_rate=0.001)
-    trainer.fit(model, train_loader, val_loader)
-    del train_loader
-    del val_loader
-
-    plot_training_curve(trainer, args.output_dir)
-
-    test_results = trainer.test(dataloaders=test_loader, ckpt_path="best")
-
-    test_predictions = trainer.predict(
-        dataloaders=test_loader, ckpt_path="best"
-    )
-    test_predictions = torch.cat(test_predictions).cpu().numpy()
-    test_targets = torch.cat([batch[2] for batch in test_loader]).cpu().numpy()
-
-    test_r2 = r2_score(test_targets, test_predictions)
-    test_pearson, _ = pearsonr(test_predictions, test_targets)
-
-    plot_scatter(
-        test_predictions, test_targets, test_pearson, test_r2, args.output_dir
-    )
-
-    print("Final Evaluation on Test Set:")
-    print(f"Test Loss (MSE): {test_results[0]['test_loss_epoch']:.4f}")
-    print(f"Test R²: {test_r2:.4f}")
-    print(f"Test Pearson Correlation: {test_pearson:.4f}")
+    pipeline = PredictorPipeline(args, hparams)
+    pipeline.run()
 
 
 if __name__ == "__main__":
@@ -363,8 +165,11 @@ if __name__ == "__main__":
         "-H", "--hdf_file", type=str, required=True, help="Path to the HDF file"
     )
     parser.add_argument(
+        "-e", "--embedding_size", type=int, help="Size of the pLM embedding"
+    )
+    parser.add_argument(
         "-p",
-        "--pred_parm",
+        "--param_name",
         type=str,
         required=True,
         help="Name of the parameter column to predict in the CSV file",
@@ -376,6 +181,30 @@ if __name__ == "__main__":
         required=True,
         help="Directory to save output files",
     )
+
+    # Hyperparameters
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--hidden_size", type=int, default=64, help="Size of hidden layers"
+    )
+    parser.add_argument(
+        "--learning_rate", type=float, default=0.001, help="Learning rate"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=128, help="Batch size"
+    )
+    parser.add_argument(
+        "--max_epochs", type=int, default=100, help="Maximum number of epochs"
+    )
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=3,
+        help="Patience for early stopping",
+    )
+
     args = parser.parse_args()
 
     main(args)
