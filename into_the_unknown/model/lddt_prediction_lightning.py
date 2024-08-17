@@ -1,6 +1,6 @@
 import argparse
 import os
-from typing import Dict, List, Tuple
+from typing import Tuple
 
 import h5py
 import matplotlib.pyplot as plt
@@ -9,8 +9,8 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
@@ -19,8 +19,28 @@ from tensorboard.backend.event_processing.event_accumulator import (
 )
 from torch.utils.data import DataLoader, Dataset
 
-share_strategy = torch.multiprocessing.get_sharing_strategy()
-torch.multiprocessing.set_sharing_strategy(share_strategy)
+class LoggingProgressBar(Callback):
+    def __init__(self, logging_interval=10):
+        super().__init__()
+        self.logging_interval = logging_interval
+        self.train_batch_idx = 0
+
+    @rank_zero_only
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        self.train_batch_idx += 1
+        if self.train_batch_idx % self.logging_interval == 0:
+            epoch = trainer.current_epoch
+            batches = self.train_batch_idx
+            total_batches = len(trainer.train_dataloader)
+            pct = 100.0 * batches / total_batches
+            print(
+                f"Epoch {epoch}: {pct:.1f}% | Batch {batches}/{total_batches}"
+            )
+
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        metrics = trainer.callback_metrics
+        print(f"Validation metrics: {metrics}")
 
 
 class ProteinEmbeddingDataset(Dataset):
@@ -52,10 +72,16 @@ class ProteinEmbeddingDataset(Dataset):
 
     #     return query_emb, target_emb, lddt_score
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(
+        self, idx: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.data.iloc[idx]
-        query_emb = torch.tensor(self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32)
-        target_emb = torch.tensor(self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32)
+        query_emb = torch.tensor(
+            self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32
+        )
+        target_emb = torch.tensor(
+            self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32
+        )
         lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
         return query_emb, target_emb, lddt_score
 
@@ -286,6 +312,10 @@ def plot_scatter(
 
 
 def main(args: argparse.Namespace) -> None:
+    if torch.cuda.is_available():
+        print("GPU available. Applying Tensor Core utilization recommendation.")
+        torch.set_float32_matmul_precision("medium")
+
     pl.seed_everything(42)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -294,7 +324,8 @@ def main(args: argparse.Namespace) -> None:
         args.csv_file, args.hdf_file, batch_size=128
     )
 
-    model = LDDTPredictor(embedding_size=1024, learning_rate=0.001)
+    # prepare training
+    progress_bar = LoggingProgressBar(logging_interval=10)
 
     early_stop_callback = EarlyStopping(
         monitor="val_loss", patience=3, mode="min"
@@ -309,13 +340,14 @@ def main(args: argparse.Namespace) -> None:
 
     trainer = pl.Trainer(
         max_epochs=100,
-        callbacks=[early_stop_callback, checkpoint_callback],
+        callbacks=[early_stop_callback, checkpoint_callback, progress_bar],
         accelerator="auto",
         devices="auto",  # This will use all available GPUs or CPU
-        enable_progress_bar=True,
+        enable_progress_bar=False,
         default_root_dir=args.output_dir,
     )
 
+    model = LDDTPredictor(embedding_size=1024, learning_rate=0.001)
     trainer.fit(model, train_loader, val_loader)
 
     plot_training_curve(trainer, args.output_dir)
