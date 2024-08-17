@@ -9,9 +9,11 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from lightning.pytorch.callbacks import ProgressBar
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from pytorch_lightning.callbacks import (
+    EarlyStopping,
+    ModelCheckpoint,
+    TQDMProgressBar,
+)
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
@@ -21,86 +23,47 @@ from tensorboard.backend.event_processing.event_accumulator import (
 from torch.utils.data import DataLoader, Dataset
 
 
-class CustomProgressBar(ProgressBar):
-    def __init__(self, log_interval_pct=10):
-        super().__init__()
-        self.log_interval_pct = log_interval_pct
-        self.last_logged_pct = 0
-
-    @rank_zero_only
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        super().on_train_batch_end(
-            trainer, pl_module, outputs, batch, batch_idx
-        )
-        total_batches = self.total_train_batches
-        current_pct = 100.0 * (batch_idx + 1) / total_batches
-
-        if (
-            current_pct - self.last_logged_pct >= self.log_interval_pct
-            or current_pct == 100
-        ):
-            self.last_logged_pct = (
-                current_pct // self.log_interval_pct
-            ) * self.log_interval_pct
-            progress_dict = self.get_progress_bar_dict(trainer)
-            progress_str = self.dict_to_string(progress_dict)
-            print(
-                f"Epoch {trainer.current_epoch}: {current_pct:.1f}%|{'█' * int(current_pct // 5):<20}| {progress_str}"
-            )
-
-    @rank_zero_only
-    def on_train_epoch_start(self, trainer, pl_module):
-        super().on_train_epoch_start(trainer, pl_module)
-        self.last_logged_pct = 0
-
-    def dict_to_string(self, d):
-        return ", ".join(
-            f"{k}={v:.6f}" if isinstance(v, float) else f"{k}={v}"
-            for k, v in d.items()
-        )
-
-
 class ProteinEmbeddingDataset(Dataset):
     def __init__(self, data: pd.DataFrame, hdf_file: str):
         self.data = data
-        # self.hdf_file = hdf_file
-        self.hdf_file = h5py.File(hdf_file, "r")
+        self.hdf_file = hdf_file
+        # self.hdf_file = h5py.File(hdf_file, "r")
 
-    def __del__(self):
-        self.hdf_file.close()
+    # def __del__(self):
+    #     self.hdf_file.close()
 
     def __len__(self) -> int:
         return len(self.data)
-
-    # def __getitem__(
-    #     self, idx: int
-    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    #     row = self.data.iloc[idx]
-
-    #     with h5py.File(self.hdf_file, "r") as hdf:
-    #         query_emb = torch.tensor(
-    #             hdf[row["query"]][:].flatten(), dtype=torch.float32
-    #         )
-    #         target_emb = torch.tensor(
-    #             hdf[row["target"]][:].flatten(), dtype=torch.float32
-    #         )
-
-    #     lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
-
-    #     return query_emb, target_emb, lddt_score
 
     def __getitem__(
         self, idx: int
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         row = self.data.iloc[idx]
-        query_emb = torch.tensor(
-            self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32
-        )
-        target_emb = torch.tensor(
-            self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32
-        )
+
+        with h5py.File(self.hdf_file, "r") as hdf:
+            query_emb = torch.tensor(
+                hdf[row["query"]][:].flatten(), dtype=torch.float32
+            )
+            target_emb = torch.tensor(
+                hdf[row["target"]][:].flatten(), dtype=torch.float32
+            )
+
         lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+
         return query_emb, target_emb, lddt_score
+
+    # def __getitem__(
+    #     self, idx: int
+    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     row = self.data.iloc[idx]
+    #     query_emb = torch.tensor(
+    #         self.hdf_file[row["query"]][:].flatten(), dtype=torch.float32
+    #     )
+    #     target_emb = torch.tensor(
+    #         self.hdf_file[row["target"]][:].flatten(), dtype=torch.float32
+    #     )
+    #     lddt_score = torch.tensor(row["lddt"], dtype=torch.float32)
+    #     return query_emb, target_emb, lddt_score
 
 
 class LDDTPredictor(pl.LightningModule):
@@ -342,7 +305,8 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # --- prepare training ---
-    progress_bar = CustomProgressBar(log_interval_pct=10)
+    refresh_rate = len(train_loader) % 10
+    progress_bar = TQDMProgressBar(refresh_rate=refresh_rate, leave=True)
 
     early_stop_callback = EarlyStopping(
         monitor="val_loss", patience=3, mode="min"
@@ -356,11 +320,11 @@ def main(args: argparse.Namespace) -> None:
     )
 
     trainer = pl.Trainer(
-        max_epochs=100,
+        max_epochs=2,
         callbacks=[early_stop_callback, checkpoint_callback, progress_bar],
         accelerator="auto",
-        devices="auto",  # This will use all available GPUs or CPU
-        enable_progress_bar=False,
+        devices="auto",
+        # enable_progress_bar=False,
         default_root_dir=args.output_dir,
     )
 
@@ -369,10 +333,6 @@ def main(args: argparse.Namespace) -> None:
 
     plot_training_curve(trainer, args.output_dir)
 
-    # evaluate performance
-    # best_model = LDDTPredictor.load_from_checkpoint(
-    #     checkpoint_callback.best_model_path
-    # )
     test_results = trainer.test(dataloaders=test_loader, ckpt_path="best")
 
     test_predictions = trainer.predict(
