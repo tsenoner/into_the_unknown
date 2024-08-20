@@ -111,6 +111,7 @@ def run_all_against_all_search(
 
 
 def main(fasta_file: Path, output_dir: Path, tmp_dir: Path, threads: int):
+    tmp_dir = output_dir / "tmp"
     base_name = fasta_file.stem
     cluster_file = Path(f"{base_name}_cluster.tsv")
 
@@ -158,12 +159,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-t",
-        "--tmp_dir",
-        type=Path,
-        default=Path("tmp"),
-        help="Temporary directory (default: ./tmp)",
-    )
-    parser.add_argument(
         "--threads",
         type=int,
         default=8,
@@ -171,4 +166,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    main(args.fasta_file, args.output_dir, args.tmp_dir, args.threads)
+    main(args.fasta_file, args.output_dir, args.threads)
