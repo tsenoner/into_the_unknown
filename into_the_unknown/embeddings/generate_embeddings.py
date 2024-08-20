@@ -49,9 +49,9 @@ def setup_model(checkpoint):
     if "esm" in checkpoint:
         mod_type = "esm"
         tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-        model = EsmModel.from_pretrained(checkpoint, torch_dtype=torch.float16)
+        model = EsmModel.from_pretrained(checkpoint) #, torch_dtype=torch.float16)
         model = model.to(device)
-        model = model.half()
+        # model = model.half()
     elif "ankh" in checkpoint:
         mod_type = "ankh"
         tokenizer = AutoTokenizer.from_pretrained(checkpoint)
