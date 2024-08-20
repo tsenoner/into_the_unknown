@@ -110,7 +110,7 @@ def run_all_against_all_search(
     )
 
 
-def main(fasta_file: Path, output_dir: Path, tmp_dir: Path, threads: int):
+def main(fasta_file: Path, output_dir: Path, threads: int):
     tmp_dir = output_dir / "tmp"
     base_name = fasta_file.stem
     cluster_file = Path(f"{base_name}_cluster.tsv")
