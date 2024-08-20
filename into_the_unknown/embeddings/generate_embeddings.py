@@ -9,6 +9,11 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, EsmModel, T5EncoderModel, T5Tokenizer
 
 # Model checkpoints
+Ankhs = [
+    "ElnaggarLab/ankh-base",
+    "ElnaggarLab/ankh-large",
+    ]
+
 ESMs = [
     "facebook/esm2_t6_8M_UR50D",
     "facebook/esm2_t12_35M_UR50D",
@@ -17,7 +22,6 @@ ESMs = [
     "facebook/esm2_t36_3B_UR50D",
 ]
 
-Ankhs = ["ElnaggarLab/ankh-base", "ElnaggarLab/ankh-large"]
 Rostlab = [
     "Rostlab/prot_t5_xl_uniref50",
     "Rostlab/ProstT5_fp16",
@@ -30,7 +34,6 @@ def seq_preprocess(df, model_type="esm"):
     if model_type in "esm":
         return df
     elif model_type == "ankh":
-        #df["sequence"] = df["sequence"].apply(list)
         return df
     elif model_type == "pt":
         df["sequence"] = df.apply(lambda row: " ".join(row["sequence"]), axis=1)
@@ -109,10 +112,16 @@ def create_embedding(
         else:
             raise ValueError("Input valid embedding type")
 
-    with h5py.File(output_file, "w") as hdf:
+    # Open the HDF file in append mode
+    with h5py.File(output_file, "a") as hdf:
         for _, row in tqdm(df.iterrows(), total=len(df)):
             sequence = row["sequence"]
             header = row["header"]
+
+            # Check if the embedding already exists
+            if header in hdf:
+                continue
+
             embedding = compute_embedding(sequence, emb_type)
             hdf.create_dataset(name=header, data=embedding)
 
@@ -142,7 +151,7 @@ if __name__ == "__main__":
         type=str,
         choices=["per_prot", "per_res"],
         default="per_prot",
-        help="Type of embedding to generate: per_prot or per_res.",
+        help="Type of embedding: per_prot or per_res (default: per_prot)",
     )
 
     args = parser.parse_args()
