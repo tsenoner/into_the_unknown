@@ -39,7 +39,7 @@ def download_plm(model_name, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Set the transformers cache and huggingface hub cache to a subdirectory within output_dir
-    cache_dir = Path("/mnt/project/senoner/model_cache/transformers_cache")
+    cache_dir = output_dir / "transformers_cache"
     os.environ["HF_DATASETS_CACHE"] = str(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
