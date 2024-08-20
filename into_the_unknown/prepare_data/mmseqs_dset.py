@@ -11,7 +11,7 @@ def run_command(command: str) -> None:
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         shell=True,
         bufsize=1,
@@ -77,6 +77,17 @@ def create_split_files(
                     outfile.write(f">{target}\n{sequences[target]}\n")
 
 
+def run_mmseqs_easy_cluster(
+    fasta_file: Path, cluster_results: Path, tmp_dir: Path, threads: int
+):
+    print("Running `mmseqs easy-cluster` command...", file=sys.stderr)
+    run_command(
+        f"mmseqs easy-cluster {fasta_file} {cluster_results} {tmp_dir} -s 7.5 "
+        f"--min-seq-id 0.3 -c 0.8 --cov-mode 0 --cluster-mode 0 --threads {threads}"
+    )
+    print("`mmseqs easy-cluster` command completed.", file=sys.stderr)
+
+
 def run_all_against_all_search(
     input_fasta: Path, output_dir: Path, tmp_dir: Path, threads: int
 ) -> None:
@@ -111,33 +122,33 @@ def run_all_against_all_search(
 
 
 def main(fasta_file: Path, output_dir: Path, threads: int):
+    # Create necessary directories
     tmp_dir = output_dir / "tmp"
-    base_name = fasta_file.stem
-    cluster_file = Path(f"{base_name}_cluster.tsv")
+    cluster_results = output_dir / "cluster" / fasta_file.stem
+    cluster_file = cluster_results.with_stem(f"{fasta_file.stem}_cluster.tsv")
 
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    cluster_results.parent.mkdir(parents=True, exist_ok=True)
 
+    # Step 1: Run MMseqs2 easy-cluster if cluster file doesn't exist
     if not cluster_file.exists():
-        print("Running `mmseqs easy-cluster` command...", file=sys.stderr)
-        run_command(
-            f"mmseqs easy-cluster {fasta_file} {base_name} {tmp_dir} -s 7.5 "
-            f"--min-seq-id 0.3 -c 0.8 --cov-mode 0 --cluster-mode 0 --threads {threads}"
-        )
-        print("`mmseqs easy-cluster` command completed.", file=sys.stderr)
+        run_mmseqs_easy_cluster(fasta_file, cluster_results, tmp_dir, threads)
 
+    # Step 2: Read sequences and clusters
     sequences = read_fasta(fasta_file)
     clusters = read_clusters(cluster_file)
+
+    # Step 3: Create split files (train, validation, test)
     create_split_files(
         clusters, sequences, output_dir, splits=(0.7, 0.15, 0.15)
     )
-
     print(
         "FASTA files created for train, validation, and test sets.",
         file=sys.stderr,
     )
 
-    # Run all-against-all search for each set
+    # Step 4: Run all-against-all search for each set
     for split in ["train", "val", "test"]:
         split_fasta = output_dir / f"{split}_set.fasta"
         run_all_against_all_search(split_fasta, output_dir, tmp_dir, threads)
