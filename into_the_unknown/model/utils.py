@@ -177,14 +177,22 @@ def create_data_loaders(
             valid_proteins = df[
                 df["query"].isin(hdf.keys()) & df["target"].isin(hdf.keys())
             ]
-        filtered_rows = len(valid_proteins)
-        removed_rows = start_row - filtered_rows
-        print(f"Filtered {removed_rows} rows ({removed_rows/start_row:.2%}.")
+        removed_rows = start_row - len(valid_proteins)
+        rm_pct = removed_rows/start_row
+        print(f"Filtered {removed_rows} rows ({rm_pct:.2%}) from {df.name}.")
         return valid_proteins
 
-    train_data = filter_valid_proteins(load_data(train_file))
-    val_data = filter_valid_proteins(load_data(val_file))
-    test_data = filter_valid_proteins(load_data(test_file))
+    train_data = load_data(train_file)
+    train_data.name = os.path.basename(train_file)  # Set name attribute
+    train_data = filter_valid_proteins(train_data)
+
+    val_data = load_data(val_file)
+    val_data.name = os.path.basename(val_file)  # Set name attribute
+    val_data = filter_valid_proteins(val_data)
+
+    test_data = load_data(test_file)
+    test_data.name = os.path.basename(test_file)  # Set name attribute
+    test_data = filter_valid_proteins(test_data)
 
     train_dataset = H5PyDataset(train_data, hdf_file, param_name)
     val_dataset = H5PyDataset(val_data, hdf_file, param_name)
