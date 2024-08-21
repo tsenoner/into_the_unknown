@@ -43,8 +43,13 @@ class PredictorPipeline:
         os.makedirs(self.args.output_dir, exist_ok=True)
 
     def setup_data_loaders(self):
+        train_file = os.path.join(self.args.data_dir, "train.csv")
+        val_file = os.path.join(self.args.data_dir, "val.csv")
+        test_file = os.path.join(self.args.data_dir, "test.csv")
         return create_data_loaders(
-            self.args.csv_file,
+            train_file,
+            val_file,
+            test_file,
             self.args.hdf_file,
             self.args.param_name,
             batch_size=self.hparams["batch_size"],
@@ -139,7 +144,7 @@ class PredictorPipeline:
 
     def run(self):
         self.train()
-        # self.evaluate(self.val_loader, "Validation")
+        self.evaluate(self.val_loader, "Validation")
         self.evaluate(self.test_loader, "Test")
 
 
@@ -160,23 +165,21 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LDDT Predictor")
     parser.add_argument(
-        "-c", "--csv_file", type=str, required=True, help="Path to the CSV file"
+        "--data_dir", type=str, required=True, help="Directory containing train.csv, val.csv, and test.csv files"
     )
     parser.add_argument(
-        "-H", "--hdf_file", type=str, required=True, help="Path to the HDF file"
+        "--hdf_file", type=str, required=True, help="Path to the HDF file"
     )
     parser.add_argument(
-        "-e", "--embedding_size", type=int, help="Size of the pLM embedding"
+        "--embedding_size", type=int, help="Size of the pLM embedding"
     )
     parser.add_argument(
-        "-p",
         "--param_name",
         type=str,
         required=True,
-        help="Name of the parameter column to predict in the CSV file",
+        help="Name of the parameter column to predict in the CSV files",
     )
     parser.add_argument(
-        "-o",
         "--output_dir",
         type=str,
         required=True,

@@ -11,7 +11,6 @@ import torch.nn as nn
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
-from sklearn.model_selection import train_test_split
 from tensorboard.backend.event_processing.event_accumulator import (
     EventAccumulator,
 )
@@ -162,26 +161,30 @@ class Predictor(pl.LightningModule):
 
 
 def create_data_loaders(
-    csv_file: str, hdf_file: str, param_name: str, batch_size: int = 32
+    train_file: str,
+    val_file: str,
+    test_file: str,
+    hdf_file: str,
+    param_name: str,
+    batch_size: int = 128
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    data = pd.read_csv(csv_file)
-    train_data, temp_data = train_test_split(
-        data, test_size=0.4, random_state=42
-    )
-    val_data, test_data = train_test_split(
-        temp_data, test_size=0.5, random_state=42
-    )
+    def load_data(file_path: str) -> pd.DataFrame:
+        return pd.read_csv(file_path, usecols=["query", "target", param_name])
 
     def filter_valid_proteins(df: pd.DataFrame) -> pd.DataFrame:
+        start_row = len(df)
         with h5py.File(hdf_file, "r") as hdf:
             valid_proteins = df[
                 df["query"].isin(hdf.keys()) & df["target"].isin(hdf.keys())
             ]
+        filtered_rows = len(valid_proteins)
+        removed_rows = start_row - filtered_rows
+        print(f"Filtered {removed_rows} rows ({removed_rows/start_row:.2%}.")
         return valid_proteins
 
-    train_data = filter_valid_proteins(train_data)
-    val_data = filter_valid_proteins(val_data)
-    test_data = filter_valid_proteins(test_data)
+    train_data = filter_valid_proteins(load_data(train_file))
+    val_data = filter_valid_proteins(load_data(val_file))
+    test_data = filter_valid_proteins(load_data(test_file))
 
     train_dataset = H5PyDataset(train_data, hdf_file, param_name)
     val_dataset = H5PyDataset(val_data, hdf_file, param_name)
