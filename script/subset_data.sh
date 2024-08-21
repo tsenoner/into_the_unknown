@@ -3,7 +3,7 @@
 subset_csv() {
     local input_file="$1"
     local output_file="$2"
-    local subset_size="${3:-100}"
+    local subset_size="${3:-100}"  # in percentage
 
     # Check if required arguments are provided
     if [[ -z "$input_file" || -z "$output_file" ]]; then
