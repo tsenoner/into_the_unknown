@@ -160,6 +160,13 @@ class Predictor(pl.LightningModule):
         )
 
 
+def get_embedding_size(hdf_file: str) -> int:
+    with h5py.File(hdf_file, "r") as hdf:
+        first_key = next(iter(hdf))
+        embedding_shape = hdf[first_key].shape
+        embedding_size = np.prod(embedding_shape)
+    return embedding_size
+
 def create_data_loaders(
     train_file: str,
     val_file: str,

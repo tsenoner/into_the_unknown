@@ -8,11 +8,12 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from .utils import (
+from into_the_unknown.model.utils import (
     Predictor,
     create_data_loaders,
     plot_scatter,
     plot_training_curve,
+    get_embedding_size,
 )
 
 
@@ -23,13 +24,14 @@ class PredictorPipeline:
         self.setup_gpu()
         pl.seed_everything(self.hparams["seed"])
         self.setup_output_directory()
+        self.embedding_size = get_embedding_size(self.args.hdf_file)
         self.train_loader, self.val_loader, self.test_loader = (
             self.setup_data_loaders()
         )
         self.callbacks = self.setup_callbacks()
         self.trainer = self.setup_trainer()
         self.model = Predictor(
-            embedding_size=self.args.embedding_size,
+            embedding_size=self.embedding_size,
             hidden_size=self.hparams["hidden_size"],
             learning_rate=self.hparams["learning_rate"],
         )
@@ -169,9 +171,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--hdf_file", type=str, required=True, help="Path to the HDF file"
-    )
-    parser.add_argument(
-        "--embedding_size", type=int, help="Size of the pLM embedding"
     )
     parser.add_argument(
         "--param_name",
