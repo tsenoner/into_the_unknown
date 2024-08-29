@@ -8,7 +8,6 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 from tensorboard.backend.event_processing.event_accumulator import (
@@ -75,8 +74,6 @@ class Predictor(pl.LightningModule):
         self.individual_layers = nn.Sequential(
             nn.Linear(embedding_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
         )
 
         self.combined_layers = nn.Sequential(
@@ -96,7 +93,7 @@ class Predictor(pl.LightningModule):
     def forward(self, emb1: torch.Tensor, emb2: torch.Tensor) -> torch.Tensor:
         proc1 = self.individual_layers(emb1)
         proc2 = self.individual_layers(emb2)
-        combined = torch.cat([proc1 + proc2, torch.abs(proc1 - proc2)], dim=1)
+        combined = torch.cat([proc1, proc2], dim=1)
         out = self.combined_layers(combined)
         return out.squeeze()
 
@@ -176,7 +173,9 @@ def create_data_loaders(
     batch_size: int = 128
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     def load_data(file_path: str) -> pd.DataFrame:
-        return pd.read_csv(file_path, usecols=["query", "target", param_name])
+        df = pd.read_csv(file_path, usecols=["query", "target", param_name])
+        df = df.dropna(subset=[param_name])
+        return df
 
     def filter_valid_proteins(df: pd.DataFrame) -> pd.DataFrame:
         start_row = len(df)
