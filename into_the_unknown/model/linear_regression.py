@@ -18,33 +18,15 @@ from into_the_unknown.model.utils import (
 )
 
 
-class ModelPredictor(Predictor):
-    def __init__(
-        self,
-        embedding_size: int,
-        hidden_size: int = 64,
-        learning_rate: float = 0.001,
-    ):
+class LinearPredictor(Predictor):
+    def __init__(self, embedding_size: int, learning_rate: float = 0.001):
         super().__init__()
-        self.individual_layers = nn.Sequential(
-            nn.Linear(embedding_size, hidden_size),
-            nn.ReLU(),
-        )
-
-        self.combined_layers = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1),
-        )
+        self.linear = nn.Linear(embedding_size, 1)
 
     def forward(self, emb1: torch.Tensor, emb2: torch.Tensor) -> torch.Tensor:
-        proc1 = self.individual_layers(emb1)
-        proc2 = self.individual_layers(emb2)
-        combined = torch.cat([proc1, proc2], dim=1)
-        out = self.combined_layers(combined)
-        return out.squeeze()
+        # Calculate Euclidean distance for each dimension
+        euclidean_dist = torch.sqrt(torch.square(emb1 - emb2))
+        return self.linear(euclidean_dist).squeeze()
 
 
 class PredictorPipeline:
@@ -60,9 +42,8 @@ class PredictorPipeline:
         )
         self.callbacks = self.setup_callbacks()
         self.trainer = self.setup_trainer()
-        self.model = ModelPredictor(
+        self.model = LinearPredictor(
             embedding_size=self.embedding_size,
-            hidden_size=self.hparams["hidden_size"],
             learning_rate=self.hparams["learning_rate"],
         )
 
@@ -183,7 +164,6 @@ class PredictorPipeline:
 def main(args: argparse.Namespace) -> None:
     hparams = {
         "seed": args.seed,
-        "hidden_size": args.hidden_size,
         "learning_rate": args.learning_rate,
         "batch_size": args.batch_size,
         "max_epochs": args.max_epochs,
@@ -221,9 +201,6 @@ if __name__ == "__main__":
     # Hyperparameters
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility"
-    )
-    parser.add_argument(
-        "--hidden_size", type=int, default=64, help="Size of hidden layers"
     )
     parser.add_argument(
         "--learning_rate", type=float, default=0.001, help="Learning rate"

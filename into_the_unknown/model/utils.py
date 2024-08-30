@@ -62,40 +62,15 @@ def worker_init_fn(worker_id):
 
 
 class Predictor(pl.LightningModule):
-    def __init__(
-        self,
-        embedding_size: int,
-        hidden_size: int = 64,
-        learning_rate: float = 0.001,
-    ):
+    def __init__(self):
         super().__init__()
         self.save_hyperparameters()
-
-        self.individual_layers = nn.Sequential(
-            nn.Linear(embedding_size, hidden_size),
-            nn.ReLU(),
-        )
-
-        self.combined_layers = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1),
-        )
 
         self.criterion = nn.MSELoss()
         self.val_predictions = []
         self.val_targets = []
         self.test_predictions = []
         self.test_targets = []
-
-    def forward(self, emb1: torch.Tensor, emb2: torch.Tensor) -> torch.Tensor:
-        proc1 = self.individual_layers(emb1)
-        proc2 = self.individual_layers(emb2)
-        combined = torch.cat([proc1, proc2], dim=1)
-        out = self.combined_layers(combined)
-        return out.squeeze()
 
     def training_step(self, batch: tuple, batch_idx: int) -> dict:
         loss, preds, targets = self._common_step(batch, batch_idx)
@@ -164,13 +139,14 @@ def get_embedding_size(hdf_file: str) -> int:
         embedding_size = np.prod(embedding_shape)
     return embedding_size
 
+
 def create_data_loaders(
     train_file: str,
     val_file: str,
     test_file: str,
     hdf_file: str,
     param_name: str,
-    batch_size: int = 128
+    batch_size: int = 128,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     def load_data(file_path: str) -> pd.DataFrame:
         df = pd.read_csv(file_path, usecols=["query", "target", param_name])
@@ -184,7 +160,7 @@ def create_data_loaders(
                 df["query"].isin(hdf.keys()) & df["target"].isin(hdf.keys())
             ]
         removed_rows = start_row - len(valid_proteins)
-        rm_pct = removed_rows/start_row
+        rm_pct = removed_rows / start_row
         print(f"Filtered {removed_rows} rows ({rm_pct:.2%}) from {df.name}.")
         return valid_proteins
 
