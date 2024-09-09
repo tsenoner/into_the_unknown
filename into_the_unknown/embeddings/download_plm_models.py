@@ -24,6 +24,7 @@ import argparse
 import os
 from pathlib import Path
 
+from transformers import T5EncoderModel, T5Tokenizer
 from transformers import AutoModel, AutoTokenizer
 
 
@@ -45,8 +46,12 @@ def download_plm(model_name, output_dir):
 
     # Download the model and tokenizer
     print(f"Downloading model '{model_name}'...")
-    model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+    if model_name.startswith("Rostlab"):
+        model = T5EncoderModel.from_pretrained(model_name, cache_dir=cache_dir)
+        tokenizer = T5Tokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+    else:
+        model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
 
     # Save the model and tokenizer to the output directory
     print(f"Saving model and tokenizer to '{output_dir}'...")
