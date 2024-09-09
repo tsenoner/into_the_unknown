@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, EsmModel, T5EncoderModel, T5Tokenizer
 Ankhs = [
     "ElnaggarLab/ankh-base",
     "ElnaggarLab/ankh-large",
-    ]
+]
 
 ESMs = [
     "facebook/esm2_t6_8M_UR50D",
@@ -26,6 +26,23 @@ Rostlab = [
     "Rostlab/prot_t5_xl_uniref50",
     "Rostlab/ProstT5_fp16",
 ]
+
+
+def process_fasta(fasta_path: Path, max_len=1022):
+    """Remove sequences longer than max_len and save their identifiers to a file."""
+    filtered_fasta_path = fasta_path.with_suffix(".filtered.fasta")
+    long_sequences_path = fasta_path.with_suffix(".long_sequences.txt")
+
+    with filtered_fasta_path.open(
+        "w"
+    ) as filtered_fasta, long_sequences_path.open("w") as long_sequences:
+        for header, seq in Fasta(str(fasta_path)).items():
+            if len(seq) > max_len:
+                long_sequences.write(f"{header.split()[0]}\n")
+            else:
+                filtered_fasta.write(f">{header}\n{seq}\n")
+
+    return filtered_fasta_path
 
 
 def seq_preprocess(df, model_type="esm"):
@@ -49,9 +66,8 @@ def setup_model(checkpoint):
     if "esm" in checkpoint:
         mod_type = "esm"
         tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-        model = EsmModel.from_pretrained(checkpoint) #, torch_dtype=torch.float16)
+        model = EsmModel.from_pretrained(checkpoint)
         model = model.to(device)
-        # model = model.half()
     elif "ankh" in checkpoint:
         mod_type = "ankh"
         tokenizer = AutoTokenizer.from_pretrained(checkpoint)
@@ -69,10 +85,10 @@ def setup_model(checkpoint):
     return model, tokenizer, mod_type
 
 
-def read_fasta(file_path):
+def read_fasta(file_path: Path):
     headers = []
     sequences = []
-    fasta = Fasta(file_path)
+    fasta = Fasta(str(file_path))
     for seq in fasta:
         headers.append(seq.name)
         sequences.append(str(seq))
@@ -80,7 +96,10 @@ def read_fasta(file_path):
 
 
 def create_embedding(
-    checkpoint, df, emb_type="per_prot", output_file="protein_embeddings.h5"
+    checkpoint,
+    df,
+    emb_type="per_prot",
+    output_file: Path = Path("protein_embeddings.h5"),
 ):
     model, tokenizer, mod_type = setup_model(checkpoint)
     model.eval()
@@ -96,7 +115,7 @@ def create_embedding(
             max_length=10_000,
             truncation=True,
             padding=True,
-            add_special_tokens=True
+            add_special_tokens=True,
         ).to(device)
         with torch.no_grad():
             outputs = model(**inputs).last_hidden_state.cpu().numpy()
@@ -138,7 +157,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "fasta_file",
-        type=str,
+        type=Path,
         help="Path to the FASTA file containing protein sequences.",
     )
     parser.add_argument(
@@ -153,12 +172,24 @@ if __name__ == "__main__":
         default="per_prot",
         help="Type of embedding: per_prot or per_res (default: per_prot)",
     )
+    parser.add_argument(
+        "--max_seq_len",
+        type=int,
+        default=None,
+        help="Maximum sequence length. Sequences longer than this will be removed. (default: None)",
+    )
 
     args = parser.parse_args()
-    headers, sequences = read_fasta(args.fasta_file)
+    fasta_file = args.fasta_file
+
+    if args.max_seq_len is not None:
+        filtered_fasta_path = process_fasta(fasta_file, args.max_seq_len)
+        headers, sequences = read_fasta(filtered_fasta_path)
+    else:
+        headers, sequences = read_fasta(fasta_file)
+
     df = pd.DataFrame({"header": headers, "sequence": sequences})
 
-    fasta_file = Path(args.fasta_file)
     output_file = fasta_file.with_name(
         f"{fasta_file.stem}_{Path(args.model_checkpoint).stem}.h5"
     )
@@ -167,6 +198,11 @@ if __name__ == "__main__":
         args.model_checkpoint,
         df,
         emb_type=args.emb_type,
-        output_file=str(output_file),
+        output_file=output_file,
     )
     print(f"Embeddings saved to {output_file}")
+
+    # Remove the temporary filtered FASTA file if it was created
+    if args.max_seq_len is not None:
+        filtered_fasta_path.unlink()
+        print(f"Temporary filtered FASTA file removed: {filtered_fasta_path}")

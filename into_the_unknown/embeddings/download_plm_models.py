@@ -10,6 +10,7 @@ Usage:       python download_protein_model.py
 Available Protein Language Models (PLMs) on Hugging Face:
 - Rostlab/prot_t5_xl_half_uniref50-enc
 - Rostlab/ProstT5_fp16
+- facebook/esm1b_t33_650M_UR50S
 - facebook/esm2_t6_8M_UR50D
 - facebook/esm2_t12_35M_UR50D
 - facebook/esm2_t30_150M_UR50D
