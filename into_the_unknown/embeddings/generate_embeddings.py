@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pandas as pd
 import torch
 from pyfaidx import Fasta
@@ -122,7 +123,7 @@ def create_embedding(
         if emb_type == "per_res":
             # remove special tokens
             if mod_type in ["pt", "ankh"]:
-                outputs = outputs[:-1, :]
+                outputs = np.squeeze(outputs, axis=0)[:-1, :]
             elif mod_type == "esm":
                 outputs = outputs[1:-1, :]
             return outputs
